@@ -1,1 +1,112 @@
-<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Palend Downloader</title><link rel="stylesheet" href="/style.css"></head><body><header><b><i>Palend</i> Downloader</b><button onclick="nav()">☰</button><nav id="nav"><a href="#home">Beranda</a><a href="#download">Downloader</a><a href="#merge">Gabung Video</a><a href="#status">Status</a></nav></header><main><section class="hero" id="home"><small>ALL-IN-ONE MEDIA TOOL</small><h1>Unduh media dengan <em>mudah.</em></h1><p>Masukkan link media yang kamu miliki atau berhak unduh. Gabungkan beberapa video menjadi satu file.</p><a class="btn" href="#download">Mulai Download</a> <a class="btn alt" href="#merge">Gabung Video</a></section><section class="card" id="download"><h2>01 · Downloader</h2><p>Untuk sumber yang kompatibel dengan yt-dlp.</p><input id="url" placeholder="Tempel URL video di sini..."><div class="row"><select id="format"><option value="mp4">Video MP4</option><option value="mp3">Audio MP3</option></select><button class="btn" onclick="downloadMedia()">Cari & Unduh</button></div><div id="dr"></div><small>Gunakan hanya konten yang kamu miliki atau berhak unduh.</small></section><section class="card" id="merge"><h2>02 · Gabung Video</h2><p>Pilih 2–20 video dari HP.</p><label class="drop"><input id="videos" type="file" accept="video/*" multiple onchange="files()"><b>📁 Pilih kumpulan video</b><span>Ketuk untuk memilih video</span></label><div id="fl"></div><button class="btn full" onclick="merge()">Gabungkan Menjadi Satu Video</button><div id="mr"></div></section><section class="card" id="status"><h2>03 · Status Server</h2><div id="health">Memeriksa...</div></section></main><footer>© 2026 Palend Downloader</footer><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#ffffff">
+<title>Palend Downloader</title>
+<meta name="description" content="Download video online dengan cepat dan mudah.">
+<style>
+:root{--g:#18c663;--gd:#0da850;--t:#18212b;--m:#718096;--bg:#f5f7fa;--line:#e4e9ee;--danger:#d93025}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--t);background:linear-gradient(#fff,#f5f7f9);line-height:1.5}
+button,input,select{font:inherit}button{cursor:pointer}a{text-decoration:none;color:inherit}
+.header{height:72px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+.nav{max-width:1120px;height:100%;margin:auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px;font-size:24px;font-weight:850;letter-spacing:-.7px}.logo span{color:var(--g)}
+.mark{width:38px;height:38px;border-radius:11px;background:var(--g);color:#fff;display:grid;place-items:center;font-weight:900}
+.links{display:flex;gap:25px;color:#66717e;font-size:14px;font-weight:700}.links a:hover{color:var(--g)}
+.menu{display:none;width:43px;height:43px;border:1px solid var(--line);background:#fff;border-radius:11px}
+.hero{max-width:900px;margin:auto;text-align:center;padding:62px 18px 35px}
+.badge{display:inline-flex;gap:8px;align-items:center;background:#e9fbf1;color:#0c9950;padding:7px 13px;border-radius:99px;font-size:13px;font-weight:800}.dot{width:8px;height:8px;background:var(--g);border-radius:50%}
+h1{font-size:clamp(38px,6vw,60px);line-height:1.03;letter-spacing:-2.5px;margin:19px 0 13px}h1 span{color:var(--g)}
+.hero>p{max-width:650px;margin:auto;color:var(--m);font-size:17px}
+.card{margin:27px auto 0;background:#fff;border:1px solid var(--line);border-radius:22px;padding:10px;box-shadow:0 14px 40px #18212b12}
+.input{height:66px;border:2px solid #e5eaee;border-radius:16px;display:flex;align-items:center;gap:9px;padding:6px 8px 6px 17px}.input:focus-within{border-color:#86dfa9;box-shadow:0 0 0 4px #18c66312}
+.input svg{width:22px;color:#8b96a1;flex:none}.input input{border:0;outline:0;width:100%;min-width:0;font-size:16px}.paste{border:0;background:#eef2f5;border-radius:10px;padding:10px 13px;color:#505b67;font-weight:800;white-space:nowrap}
+.controls{display:grid;grid-template-columns:190px 1fr;gap:9px;margin-top:9px}select{height:56px;border:1px solid var(--line);border-radius:13px;background:#f8fafb;padding:0 14px;outline:0;color:var(--t)}
+.download{height:56px;border:0;border-radius:13px;background:var(--g);color:#fff;font-weight:900;font-size:16px;box-shadow:0 8px 18px #18c6632c}.download:hover{background:var(--gd)}.download:disabled{opacity:.65;cursor:wait}
+.platforms{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:17px}.platform{background:#fff;border:1px solid var(--line);border-radius:99px;padding:7px 12px;font-size:12px;font-weight:750;color:#697481}
+.note{font-size:12px;color:#87919c;margin-top:12px}.note b{color:#56616d}
+.result{display:none;text-align:left;margin:14px auto 0;max-width:900px;padding:14px 16px;border-radius:14px;background:#effbf4;border:1px solid #c6efd7;color:#14783e}.result.show{display:block}.result.err{background:#fff4f3;border-color:#ffd0cc;color:#c52e27}
+.rrow{display:flex;gap:12px;align-items:center}.ricon{width:38px;height:38px;border-radius:11px;background:#d8f7e5;display:grid;place-items:center;font-weight:900}.err .ricon{background:#ffe1df}.rtext{flex:1}.rt{font-weight:850}.rd{font-size:13px;margin-top:2px;word-break:break-word}.save{border:0;background:var(--g);color:#fff;border-radius:10px;padding:10px 13px;font-weight:850}
+.section{max-width:1040px;margin:auto;padding:25px 20px 60px}.head{text-align:center;margin-bottom:20px}.eyebrow{color:var(--g);font-size:12px;font-weight:900;letter-spacing:1.4px;text-transform:uppercase}.head h2{margin:5px 0;font-size:30px;letter-spacing:-1px}.head p{margin:0;color:var(--m);font-size:14px}
+.features{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.feature{background:#fff;border:1px solid var(--line);border-radius:17px;padding:21px;box-shadow:0 8px 25px #18212b08}.ico{width:43px;height:43px;border-radius:13px;background:#eafaf1;color:var(--g);display:grid;place-items:center;margin-bottom:13px}.feature h3{margin:0 0 6px;font-size:16px}.feature p{margin:0;color:var(--m);font-size:13px}
+.merge{margin-top:25px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:23px;box-shadow:0 12px 35px #18212b0c}.drop{border:2px dashed #d7dee5;border-radius:15px;background:#fafbfc;text-align:center;padding:24px}.drop input{display:none}.choose{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 15px;font-weight:800}.names{margin-top:10px;color:var(--m);font-size:13px;word-break:break-word}.mergebtn{margin-top:11px;width:100%;height:52px;border:0;border-radius:12px;background:#18212b;color:#fff;font-weight:850}
+.footer{background:#17202a;color:#aeb8c2;text-align:center;padding:29px 15px;font-size:12px}.footer b{color:#fff}
+@media(max-width:700px){.links{display:none}.menu{display:block}.hero{padding:43px 14px 28px}.hero>p{font-size:15px}.card{margin-top:22px}.controls{grid-template-columns:1fr}.features{grid-template-columns:1fr}.section{padding-left:14px;padding-right:14px}.rrow{align-items:flex-start;flex-wrap:wrap}.save{margin-left:50px}}
+</style>
+</head>
+<body>
+<header class="header"><nav class="nav">
+<a class="logo" href="/"><div class="mark">P</div><div><span>Palend</span> Downloader</div></a>
+<div class="links"><a href="#download">Download</a><a href="#cara">Cara Pakai</a><a href="#gabung">Gabung Video</a></div>
+<button class="menu" onclick="document.querySelector('.links').style.display='flex'">☰</button>
+</nav></header>
+
+<main>
+<section class="hero" id="download">
+<div class="badge"><i class="dot"></i> Downloader Video Online</div>
+<h1>Download video <span>lebih mudah.</span></h1>
+<p>Tempel link video, pilih format, lalu tekan Download. Sederhana dan nyaman digunakan dari HP maupun komputer.</p>
+<div class="card">
+<div class="input">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+<input id="url" type="url" placeholder="Tempel link video di sini..." autocomplete="off">
+<button class="paste" onclick="pasteLink()">Tempel</button>
+</div>
+<div class="controls"><select id="format"><option value="mp4">Video MP4</option><option value="mp3">Audio MP3</option></select><button id="dbtn" class="download" onclick="downloadVideo()">Download</button></div>
+</div>
+<div class="platforms"><div class="platform">▶ YouTube</div><div class="platform">♪ TikTok</div><div class="platform">◎ Instagram</div><div class="platform">f Facebook</div><div class="platform">𝕏 X</div></div>
+<div class="note"><b>Catatan:</b> gunakan hanya video yang kamu miliki atau berhak untuk mengunduh.</div>
+<div id="result" class="result"></div>
+</section>
+
+<section class="section" id="cara"><div class="head"><div class="eyebrow">Mudah digunakan</div><h2>Download dalam 3 langkah</h2><p>Tidak perlu pengaturan rumit.</p></div>
+<div class="features">
+<div class="feature"><div class="ico">🔗</div><h3>1. Tempel link</h3><p>Salin link video lalu tempel di kolom download.</p></div>
+<div class="feature"><div class="ico">⚙</div><h3>2. Pilih format</h3><p>Pilih Video MP4 atau Audio MP3 sesuai kebutuhan.</p></div>
+<div class="feature"><div class="ico">⬇</div><h3>3. Download</h3><p>Tekan Download dan simpan file setelah selesai diproses.</p></div>
+</div></section>
+
+<section class="section" id="gabung"><div class="head"><div class="eyebrow">Fitur tambahan</div><h2>Gabung Video</h2><p>Pilih beberapa video dari HP untuk menggabungkannya menjadi satu file.</p></div>
+<div class="merge"><div class="drop"><label class="choose" for="videos">📁 Pilih video</label><input id="videos" type="file" accept="video/*" multiple onchange="showFiles()"><div id="names" class="names">Belum ada video yang dipilih.</div></div><button class="mergebtn" onclick="mergeVideos()">Gabungkan Video</button><div id="mresult" class="result"></div></div></section>
+</main>
+<footer class="footer"><b>Palend Downloader</b> · Download video dengan lebih sederhana.</footer>
+
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+function showResult(el,ok,title,detail,url){
+ el.className='result show '+(ok?'':'err');
+ el.innerHTML='<div class="rrow"><div class="ricon">'+(ok?'✓':'!')+'</div><div class="rtext"><div class="rt">'+esc(title)+'</div><div class="rd">'+esc(detail)+'</div></div>'+(url?'<button class="save" onclick="location.href=''+url+'''>Simpan File</button>':'')+'</div>';
+}
+async function pasteLink(){try{document.getElementById('url').value=await navigator.clipboard.readText()}catch(e){}document.getElementById('url').focus()}
+async function downloadVideo(){
+ const input=document.getElementById('url'),btn=document.getElementById('dbtn'),res=document.getElementById('result');
+ const url=input.value.trim(),format=document.getElementById('format').value;
+ if(!url)return showResult(res,false,'Link belum diisi','Tempel link video terlebih dahulu.');
+ if(!/^https?:\/\//i.test(url))return showResult(res,false,'Link tidak valid','Pastikan link dimulai dengan https://');
+ btn.disabled=true;btn.textContent='Memproses...';res.className='result';
+ try{
+  const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,format})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||!d.ok)throw new Error(d.error||d.detail||'Video tidak dapat diproses.');
+  const u=d.download?new URL(d.download,location.origin).href:null;
+  showResult(res,true,'Video siap diunduh','Proses selesai. Tekan Simpan File untuk menyimpan.',u);
+ }catch(e){showResult(res,false,'Download gagal',e.message)}finally{btn.disabled=false;btn.textContent='Download'}
+}
+function showFiles(){const f=[...document.getElementById('videos').files];document.getElementById('names').textContent=f.length?f.map(x=>x.name).join(' • '):'Belum ada video yang dipilih.'}
+async function mergeVideos(){
+ const files=[...document.getElementById('videos').files],res=document.getElementById('mresult');
+ if(files.length<2)return showResult(res,false,'Pilih minimal 2 video','Pilih dua video atau lebih.');
+ const form=new FormData();files.forEach(f=>form.append('videos',f));
+ try{
+  res.className='result show';res.textContent='Sedang menggabungkan video...';
+  const r=await fetch('/api/merge',{method:'POST',body:form}),d=await r.json().catch(()=>({}));
+  if(!r.ok||!d.ok)throw new Error(d.error||d.detail||'Penggabungan gagal.');
+  showResult(res,true,'Video berhasil digabung','File gabungan sudah siap disimpan.',d.download?new URL(d.download,location.origin).href:null);
+ }catch(e){showResult(res,false,'Penggabungan gagal',e.message)}
+}
+document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter')downloadVideo()});
+</script>
+</body>
+  </html>
