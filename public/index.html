@@ -77,7 +77,8 @@ h1{font-size:clamp(38px,6vw,60px);line-height:1.03;letter-spacing:-2.5px;margin:
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 function showResult(el,ok,title,detail,url){
  el.className='result show '+(ok?'':'err');
- el.innerHTML='<div class="rrow"><div class="ricon">'+(ok?'✓':'!')+'</div><div class="rtext"><div class="rt">'+esc(title)+'</div><div class="rd">'+esc(detail)+'</div></div>'+(url?'<button class="save" onclick="location.href=''+url+'''>Simpan File</button>':'')+'</div>';
+ el.innerHTML='<div class="rrow"><div class="ricon">'+(ok?'✓':'!')+'</div><div class="rtext"><div class="rt">'+esc(title)+'</div><div class="rd">'+esc(detail)+'</div></div>'+(url?'<button class="save" id="saveBtn">Simpan File</button>':'')+'</div>';
+ if(url){document.getElementById('saveBtn').addEventListener('click',()=>{window.location.href=url})}
 }
 async function pasteLink(){try{document.getElementById('url').value=await navigator.clipboard.readText()}catch(e){}document.getElementById('url').focus()}
 async function downloadVideo(){
@@ -109,4 +110,4 @@ async function mergeVideos(){
 document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter')downloadVideo()});
 </script>
 </body>
-  </html>
+ </html>
