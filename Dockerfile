@@ -1,18 +1,16 @@
-FROM node:20-bookworm-slim
+FROM python:3.12-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        python3 \
-        python3-pip \
-        ca-certificates \
+ENV PYTHONUNBUFFERED=1
+ENV NODE_ENV=production
+
+RUN apt-get update && \
+    apt-get install -y \
+    ffmpeg \
+    nodejs \
+    npm \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install \
-    --no-cache-dir \
-    --break-system-packages \
-    --upgrade \
-    yt-dlp
 
 WORKDIR /app
 
@@ -20,12 +18,12 @@ COPY package*.json ./
 
 RUN npm install --omit=dev
 
+RUN pip install --no-cache-dir \
+    -U \
+    "yt-dlp[default,curl-cffi]"
+
 COPY . .
-
-RUN mkdir -p uploads outputs
-
-ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
