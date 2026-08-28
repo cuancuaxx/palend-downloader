@@ -1,183 +1,512 @@
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const crypto = require('crypto');
-const { spawn } = require('child_process');
+const express = require("express");
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const { spawn } = require("child_process");
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const DOWNLOAD_DIR = path.join(os.tmpdir(), 'palend-downloads');
 
-fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
-app.disable('x-powered-by');
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '32kb' }));
-app.use(express.urlencoded({ extended: false, limit: '32kb' }));
+const PORT = process.env.PORT || 3000;
 
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
+const ROOT = __dirname;
+const PUBLIC_DIR = path.join(ROOT, "public");
+const DOWNLOAD_DIR = path.join(ROOT, "downloads");
+const UPLOAD_DIR = path.join(ROOT, "uploads");
+
+for (const dir of [DOWNLOAD_DIR, UPLOAD_DIR]) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+app.use(express.static(PUBLIC_DIR));
+
+/*
+|--------------------------------------------------------------------------
+| HEALTH CHECK
+|--------------------------------------------------------------------------
+*/
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    status: "online",
+    service: "Palend Downloader",
+    time: new Date().toISOString()
+  });
 });
 
-function isAllowedUrl(value) {
-  try {
-    const u = new URL(String(value).trim());
-    if (!['http:', 'https:'].includes(u.protocol)) return false;
-    const host = u.hostname.toLowerCase();
-    const allowed = [
-      'youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be',
-      'youtube-nocookie.com', 'www.youtube-nocookie.com',
-      'tiktok.com', 'www.tiktok.com', 'm.tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com',
-      'instagram.com', 'www.instagram.com',
-      'facebook.com', 'www.facebook.com', 'm.facebook.com', 'fb.watch',
-      'twitter.com', 'www.twitter.com', 'x.com', 'www.x.com'
-    ];
-    return allowed.some(d => host === d || host.endsWith('.' + d));
-  } catch { return false; }
-}
+/*
+|--------------------------------------------------------------------------
+| DOWNLOAD FILE
+|--------------------------------------------------------------------------
+*/
 
-function platformFromUrl(value) {
-  const host = new URL(value).hostname.toLowerCase();
-  if (host.includes('youtube') || host === 'youtu.be') return 'youtube';
-  if (host.includes('tiktok')) return 'tiktok';
-  if (host.includes('instagram')) return 'instagram';
-  if (host.includes('facebook') || host === 'fb.watch') return 'facebook';
-  if (host === 'twitter.com' || host.endsWith('.twitter.com') || host === 'x.com' || host.endsWith('.x.com')) return 'twitter';
-  return 'unknown';
-}
+app.get("/downloads/:file", (req, res) => {
+  const filename = path.basename(req.params.file);
+  const file = path.join(DOWNLOAD_DIR, filename);
 
-function runCommand(command, args, timeout = 8 * 60 * 1000) {
+  if (!fs.existsSync(file)) {
+    return res.status(404).json({
+      ok: false,
+      error: "File tidak ditemukan."
+    });
+  }
+
+  res.download(file, filename);
+});
+
+/*
+|--------------------------------------------------------------------------
+| YT-DLP RUNNER
+|--------------------------------------------------------------------------
+*/
+
+function runYtDlp(args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', b => { stdout += b.toString(); if (stdout.length > 200000) stdout = stdout.slice(-200000); });
-    child.stderr.on('data', b => { stderr += b.toString(); if (stderr.length > 200000) stderr = stderr.slice(-200000); });
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Proses terlalu lama dan dihentikan.')); }, timeout);
-    child.on('error', err => { clearTimeout(timer); reject(err); });
-    child.on('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    const command = "python3";
+
+    const finalArgs = [
+      "-m",
+      "yt_dlp",
+      "--no-playlist",
+      "--no-warnings",
+      "--newline",
+      ...args
+    ];
+
+    console.log("Running:", command, finalArgs.join(" "));
+
+    const child = spawn(command, finalArgs);
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", data => {
+      stdout += data.toString();
+      console.log(data.toString().trim());
+    });
+
+    child.stderr.on("data", data => {
+      stderr += data.toString();
+      console.error(data.toString().trim());
+    });
+
+    child.on("error", err => {
+      reject(err);
+    });
+
+    child.on("close", code => {
+      if (code === 0) {
+        resolve({
+          stdout,
+          stderr
+        });
+      } else {
+        reject(
+          new Error(
+            stderr.trim() ||
+            stdout.trim() ||
+            `yt-dlp keluar dengan kode ${code}`
+          )
+        );
+      }
+    });
   });
 }
 
-function outputTemplate(jobId) { return path.join(DOWNLOAD_DIR, `${jobId}.%(ext)s`); }
+/*
+|--------------------------------------------------------------------------
+| DOWNLOAD VIDEO
+|--------------------------------------------------------------------------
+*/
 
-function findDownloadedFile(jobId) {
-  const files = fs.readdirSync(DOWNLOAD_DIR)
-    .filter(n => n.startsWith(jobId + '.'))
-    .map(n => path.join(DOWNLOAD_DIR, n))
-    .filter(f => { try { return fs.statSync(f).isFile(); } catch { return false; } });
-  if (!files.length) return null;
-  return files.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
-}
-
-function cleanupJob(jobId) {
-  for (const name of fs.readdirSync(DOWNLOAD_DIR)) {
-    if (!name.startsWith(jobId + '.')) continue;
-    try { fs.unlinkSync(path.join(DOWNLOAD_DIR, name)); } catch {}
-  }
-}
-
-function publicBaseUrl(req) {
-  return (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
-}
-
-function ytDlpArgs(url, output) {
-  return [
-    '--no-playlist', '--no-warnings', '--ignore-config',
-    '--js-runtimes', 'deno',
-    '--remote-components', 'ejs:npm',
-    '-f',
-    'bv*[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/' +
-    'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/' +
-    'b[ext=mp4][height<=1080]/b[height<=1080]/b',
-    '--merge-output-format', 'mp4',
-    '--remux-video', 'mp4',
-    '--retries', '3', '--fragment-retries', '3', '--extractor-retries', '2',
-    '--socket-timeout', '30', '--concurrent-fragments', '4',
-    '--restrict-filenames', '--print', 'after_move:filepath',
-    '-o', output, url
-  ];
-}
-
-function usefulError(stderr) {
-  const text = String(stderr || '').trim();
-  if (/Sign in to confirm|not a bot|captcha/i.test(text)) return 'Platform meminta verifikasi. Silakan coba video publik lain.';
-  if (/Requested format is not available/i.test(text)) return 'Format video tidak tersedia. Silakan coba video lain.';
-  if (/Video unavailable|Private video|members-only/i.test(text)) return 'Video tidak tersedia untuk publik.';
-  if (/Unsupported URL/i.test(text)) return 'Link tidak didukung.';
-  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean).filter(s => !s.startsWith('[debug]'));
-  return lines.slice(-3).join(' ') || 'Video tidak dapat diproses.';
-}
-
-async function downloadVideo(url, jobId) {
-  console.log('DOWNLOAD PLATFORM:', platformFromUrl(url));
-  console.log('DOWNLOAD URL:', url);
-  const result = await runCommand('yt-dlp', ytDlpArgs(url, outputTemplate(jobId)));
-  if (result.code !== 0) {
-    console.error('YT-DLP ERROR:', result.stderr);
-    throw new Error(usefulError(result.stderr));
-  }
-  const file = findDownloadedFile(jobId);
-  if (!file) throw new Error('Video selesai diproses tetapi file hasil tidak ditemukan.');
-  if (path.extname(file).toLowerCase() !== '.mp4') throw new Error('Server menghasilkan format yang tidak kompatibel.');
-  return file;
-}
-
-async function handleDownload(req, res) {
-  const url = req.body?.url || req.query?.url;
-  const format = String(req.body?.format || req.query?.format || 'mp4').toLowerCase();
-  if (!url) return res.status(400).json({ success: false, error: 'Link video belum diisi.' });
-  if (!isAllowedUrl(url)) return res.status(400).json({ success: false, error: 'Link tidak didukung. Gunakan YouTube, TikTok, Instagram, Facebook, atau X.' });
-  if (format !== 'mp4') return res.status(400).json({ success: false, error: 'Saat ini format yang tersedia adalah MP4.' });
-
-  const jobId = crypto.randomBytes(10).toString('hex');
+app.post("/api/download", async (req, res) => {
   try {
-    const file = await downloadVideo(String(url).trim(), jobId);
-    const downloadUrl = `${publicBaseUrl(req)}/downloads/${path.basename(file)}`;
-    return res.json({ success: true, ok: true, format: 'mp4', filename: path.basename(file), downloadUrl, url: downloadUrl });
-  } catch (err) {
-    cleanupJob(jobId);
-    console.error('DOWNLOAD ERROR:', err);
-    return res.status(500).json({ success: false, ok: false, error: err.message || 'Gagal memproses video.' });
+    const { url, format } = req.body || {};
+
+    if (!url) {
+      return res.status(400).json({
+        ok: false,
+        error: "Link video belum diisi."
+      });
+    }
+
+    if (!/^https?:\/\//i.test(url)) {
+      return res.status(400).json({
+        ok: false,
+        error: "URL tidak valid."
+      });
+    }
+
+    const selectedFormat = format === "mp3" ? "mp3" : "mp4";
+
+    const id = crypto.randomBytes(8).toString("hex");
+
+    let outputTemplate;
+    let args;
+
+    if (selectedFormat === "mp3") {
+      outputTemplate = path.join(
+        DOWNLOAD_DIR,
+        `${id}.%(ext)s`
+      );
+
+      args = [
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "192K",
+        "--ffmpeg-location",
+        "/usr/bin/ffmpeg",
+        "-o",
+        outputTemplate,
+        url
+      ];
+    } else {
+      outputTemplate = path.join(
+        DOWNLOAD_DIR,
+        `${id}.%(ext)s`
+      );
+
+      args = [
+        "-f",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+        "--merge-output-format",
+        "mp4",
+        "--ffmpeg-location",
+        "/usr/bin/ffmpeg",
+        "-o",
+        outputTemplate,
+        url
+      ];
+    }
+
+    await runYtDlp(args);
+
+    let filename = null;
+
+    const files = fs.readdirSync(DOWNLOAD_DIR);
+
+    const candidates = files
+      .filter(file => file.startsWith(id))
+      .sort((a, b) => {
+        const aTime = fs.statSync(
+          path.join(DOWNLOAD_DIR, a)
+        ).mtimeMs;
+
+        const bTime = fs.statSync(
+          path.join(DOWNLOAD_DIR, b)
+        ).mtimeMs;
+
+        return bTime - aTime;
+      });
+
+    if (candidates.length > 0) {
+      filename = candidates[0];
+    }
+
+    if (!filename) {
+      throw new Error(
+        "yt-dlp selesai tetapi file hasil tidak ditemukan."
+      );
+    }
+
+    const downloadUrl =
+      `/downloads/${encodeURIComponent(filename)}`;
+
+    return res.json({
+      ok: true,
+      message: "Video berhasil diproses.",
+      filename,
+      download: downloadUrl
+    });
+
+  } catch (error) {
+    console.error("DOWNLOAD ERROR:", error);
+
+    let message = error.message || "Gagal memproses video.";
+
+    if (
+      message.includes("Sign in") ||
+      message.includes("LOGIN_REQUIRED")
+    ) {
+      message =
+        "Platform meminta login/cookies. Video tersebut tidak dapat diproses tanpa autentikasi.";
+    }
+
+    if (
+      message.includes("Unsupported URL")
+    ) {
+      message =
+        "Link tidak didukung atau URL video tidak dikenali.";
+    }
+
+    if (
+      message.includes("Video unavailable")
+    ) {
+      message =
+        "Video tidak tersedia atau dibatasi oleh pemilik/platform.";
+    }
+
+    return res.status(500).json({
+      ok: false,
+      error: message
+    });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| MULTER
+|--------------------------------------------------------------------------
+*/
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, UPLOAD_DIR);
+  },
+
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const name =
+      crypto.randomBytes(8).toString("hex") + ext;
+
+    cb(null, name);
+  }
+});
+
+const upload = multer({
+  storage,
+
+  limits: {
+    files: 10,
+    fileSize: 200 * 1024 * 1024
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| MERGE VIDEO
+|--------------------------------------------------------------------------
+*/
+
+app.post(
+  "/api/merge",
+  upload.array("videos", 10),
+  async (req, res) => {
+
+    const files = req.files || [];
+
+    if (files.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        error: "Minimal 2 video diperlukan."
+      });
+    }
+
+    const id = crypto.randomBytes(8).toString("hex");
+
+    const output = path.join(
+      DOWNLOAD_DIR,
+      `${id}-merged.mp4`
+    );
+
+    const listFile = path.join(
+      UPLOAD_DIR,
+      `${id}.txt`
+    );
+
+    try {
+
+      /*
+       * Buat file concat FFmpeg.
+       */
+      const lines = files.map(file => {
+        const safePath = file.path.replace(/'/g, "'\\''");
+        return `file '${safePath}'`;
+      });
+
+      fs.writeFileSync(
+        listFile,
+        lines.join("\n"),
+        "utf8"
+      );
+
+      await new Promise((resolve, reject) => {
+
+        const ffmpeg = spawn("ffmpeg", [
+          "-y",
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          listFile,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "23",
+          "-c:a",
+          "aac",
+          "-movflags",
+          "+faststart",
+          output
+        ]);
+
+        let stderr = "";
+
+        ffmpeg.stderr.on("data", data => {
+          stderr += data.toString();
+        });
+
+        ffmpeg.on("error", reject);
+
+        ffmpeg.on("close", code => {
+
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                stderr.slice(-3000) ||
+                "FFmpeg gagal menggabungkan video."
+              )
+            );
+          }
+
+        });
+
+      });
+
+      const downloadUrl =
+        `/downloads/${path.basename(output)}`;
+
+      return res.json({
+        ok: true,
+        message: "Video berhasil digabung.",
+        download: downloadUrl
+      });
+
+    } catch (error) {
+
+      console.error("MERGE ERROR:", error);
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.message ||
+          "Gagal menggabungkan video."
+      });
+
+    } finally {
+
+      /*
+       * Bersihkan file upload.
+       */
+
+      for (const file of files) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch {}
+      }
+
+      try {
+        if (fs.existsSync(listFile)) {
+          fs.unlinkSync(listFile);
+        }
+      } catch {}
+    }
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| CLEAN OLD FILES
+|--------------------------------------------------------------------------
+*/
+
+function cleanOldFiles() {
+
+  const folders = [
+    DOWNLOAD_DIR,
+    UPLOAD_DIR
+  ];
+
+  const now = Date.now();
+
+  for (const folder of folders) {
+
+    if (!fs.existsSync(folder)) {
+      continue;
+    }
+
+    for (const file of fs.readdirSync(folder)) {
+
+      const fullPath = path.join(folder, file);
+
+      try {
+
+        const stat = fs.statSync(fullPath);
+
+        const age =
+          now - stat.mtimeMs;
+
+        /*
+         * Hapus file lebih lama dari 30 menit.
+         */
+
+        if (age > 30 * 60 * 1000) {
+          fs.unlinkSync(fullPath);
+        }
+
+      } catch {}
+    }
   }
 }
 
-app.post('/api/download', handleDownload);
-app.post('/download', handleDownload);
-app.post('/api/download-video', handleDownload);
+setInterval(
+  cleanOldFiles,
+  10 * 60 * 1000
+);
 
-app.get('/health', (req, res) => res.json({ ok: true, status: 'online', service: 'Palend Downloader', time: new Date().toISOString() }));
-app.get('/api/health', (req, res) => res.json({ ok: true, status: 'online', service: 'Palend Downloader', time: new Date().toISOString() }));
+/*
+|--------------------------------------------------------------------------
+| ERROR HANDLER
+|--------------------------------------------------------------------------
+*/
 
-app.get('/downloads/:file', (req, res) => {
-  const name = path.basename(req.params.file);
-  if (!/^[a-f0-9]{20}\.mp4$/i.test(name)) return res.status(404).send('File tidak ditemukan.');
-  const file = path.join(DOWNLOAD_DIR, name);
-  if (!fs.existsSync(file)) return res.status(404).send('File sudah tidak tersedia.');
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-  res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(file);
-});
+app.use((err, req, res, next) => {
 
-if (fs.existsSync(PUBLIC_DIR)) app.use(express.static(PUBLIC_DIR));
-app.use((req, res) => {
-  const index = path.join(PUBLIC_DIR, 'index.html');
-  if (req.method === 'GET' && fs.existsSync(index)) return res.sendFile(index);
-  res.status(404).json({ success: false, error: 'Endpoint tidak ditemukan.' });
-});
+  console.error("SERVER ERROR:", err);
 
-setInterval(() => {
-  const now = Date.now();
-  for (const name of fs.readdirSync(DOWNLOAD_DIR)) {
-    const file = path.join(DOWNLOAD_DIR, name);
-    try { if (now - fs.statSync(file).mtimeMs > 30 * 60 * 1000) fs.unlinkSync(file); } catch {}
+  if (res.headersSent) {
+    return next(err);
   }
-}, 5 * 60 * 1000).unref();
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Palend Downloader aktif di port ${PORT}`));
+  res.status(500).json({
+    ok: false,
+    error: err.message || "Terjadi kesalahan server."
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| START
+|--------------------------------------------------------------------------
+*/
+
+app.listen(PORT, "0.0.0.0", () => {
+
+  console.log(
+    `Palend Downloader aktif pada port ${PORT}`
+  );
+
+});
