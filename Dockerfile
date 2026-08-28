@@ -1,25 +1,38 @@
-FROM python:3.12-slim
+FROM node:22-bookworm
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    DENO_INSTALL=/usr/local
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NODE_ENV=production
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg curl ca-certificates unzip nodejs \
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Deno untuk kebutuhan ekstraksi YouTube terbaru
 RUN curl -fsSL https://deno.land/install.sh | sh
 
-RUN python -m pip install --upgrade pip \
-    && python -m pip install --upgrade "yt-dlp[default]"
+ENV DENO_INSTALL=/root/.deno
+ENV PATH="/root/.deno/bin:${PATH}"
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
-COPY server.js ./
-COPY public ./public
 
-RUN mkdir -p /tmp/palend-downloads
+COPY package*.json ./
+
+RUN npm install --omit=dev
+
+# Install yt-dlp terbaru + EJS support
+RUN python3 -m pip install --break-system-packages --upgrade \
+    "yt-dlp[default]"
+
+COPY . .
+
+RUN mkdir -p /app/downloads
+
 EXPOSE 3000
+
 CMD ["npm", "start"]
