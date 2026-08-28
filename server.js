@@ -7,58 +7,33 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 const UP = path.join(ROOT, 'uploads');
 const OUT = path.join(ROOT, 'outputs');
 
-fs.mkdirSync(UP, { recursive: true });
-fs.mkdirSync(OUT, { recursive: true });
+[UP, OUT].forEach((dir) => fs.mkdirSync(dir, { recursive: true }));
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(ROOT, 'public')));
 
 const upload = multer({
   dest: UP,
-  limits: {
-    fileSize: 500 * 1024 * 1024,
-    files: 20
-  }
+  limits: { fileSize: 500 * 1024 * 1024, files: 20 }
 });
 
-/* =========================
-   RUN COMMAND
-========================= */
-
-function run(command, args = []) {
+function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      env: process.env
-    });
-
+    const child = spawn(command, args);
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', data => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on('data', data => {
-      stderr += data.toString();
-    });
-
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
     child.on('error', reject);
-
-    child.on('close', code => {
+    child.on('close', (code) => {
       if (code !== 0) {
-        reject(
-          new Error(
-            stderr.trim() ||
-            stdout.trim() ||
-            `Process exited with code ${code}`
-          )
-        );
+        reject(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code}`));
       } else {
         resolve({ stdout, stderr });
       }
@@ -66,674 +41,269 @@ function run(command, args = []) {
   });
 }
 
-/* =========================
-   DETECT PLATFORM
-========================= */
-
-function detectPlatform(url) {
-  const value = url.toLowerCase();
-
-  if (
-    value.includes('youtube.com') ||
-    value.includes('youtu.be')
-  ) {
-    return 'youtube';
-  }
-
-  if (
-    value.includes('tiktok.com') ||
-    value.includes('vt.tiktok.com')
-  ) {
-    return 'tiktok';
-  }
-
-  if (
-    value.includes('instagram.com')
-  ) {
-    return 'instagram';
-  }
-
-  if (
-    value.includes('facebook.com') ||
-    value.includes('fb.watch')
-  ) {
-    return 'facebook';
-  }
-
-  if (
-    value.includes('twitter.com') ||
-    value.includes('x.com')
-  ) {
-    return 'twitter';
-  }
-
-  return 'unknown';
+function safeUnlink(file) {
+  if (!file) return;
+  try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch {}
 }
 
-/* =========================
-   COOKIES
-========================= */
+function createYoutubeCookiesFile() {
+  const encoded = process.env.YOUTUBE_COOKIES_B64;
+  if (!encoded) return null;
 
-function createCookieFile(variableName, prefix) {
-  const encoded = process.env[variableName];
-
-  if (!encoded) {
-    return null;
-  }
-
-  let tempDir = null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'palend-youtube-'));
+  const file = path.join(dir, 'cookies.txt');
 
   try {
-    tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), prefix)
-    );
-
-    const file = path.join(
-      tempDir,
-      'cookies.txt'
-    );
-
-    const data = Buffer
-      .from(encoded.trim(), 'base64')
-      .toString('utf8');
-
-    if (!data.includes('# Netscape HTTP Cookie File')) {
-      throw new Error(
-        `${variableName} bukan cookies.txt format Netscape`
-      );
+    const cookieData = Buffer.from(encoded, 'base64').toString('utf8');
+    if (!cookieData.includes('# Netscape HTTP Cookie File')) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw new Error('Format cookies tidak valid. Gunakan cookies.txt format Netscape.');
     }
-
-    fs.writeFileSync(
-      file,
-      data,
-      {
-        encoding: 'utf8',
-        mode: 0o600
-      }
-    );
-
-    return {
-      file,
-      dir: tempDir
-    };
-
+    fs.writeFileSync(file, cookieData, { encoding: 'utf8', mode: 0o600 });
+    return { file, dir };
   } catch (error) {
-
-    if (tempDir) {
-      try {
-        fs.rmSync(tempDir, {
-          recursive: true,
-          force: true
-        });
-      } catch {}
-    }
-
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     throw error;
   }
 }
 
-function removeCookieFile(info) {
+function removeYoutubeCookies(info) {
   if (!info) return;
-
-  try {
-    fs.rmSync(info.dir, {
-      recursive: true,
-      force: true
-    });
-  } catch {}
+  try { fs.rmSync(info.dir, { recursive: true, force: true }); } catch {}
 }
 
-/* =========================
-   HEALTH
-========================= */
+function getPlatform(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'youtu.be' || host.includes('youtube.com')) return 'youtube';
+    if (host.includes('tiktok.com')) return 'tiktok';
+    if (host.includes('instagram.com')) return 'instagram';
+    if (host === 'fb.watch' || host.includes('facebook.com')) return 'facebook';
+    if (host.includes('twitter.com') || host.includes('x.com')) return 'twitter';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function supportedUrl(url) {
+  return getPlatform(url) !== 'unknown';
+}
+
+function findFile(prefix) {
+  const found = fs.readdirSync(OUT).find((name) => name.startsWith(prefix));
+  return found ? path.join(OUT, found) : null;
+}
 
 app.get('/api/health', (req, res) => {
-
   res.json({
     ok: true,
     status: 'online',
-
     service: 'Palend Downloader',
-
-    cookies: {
-      youtube: Boolean(
-        process.env.YOUTUBE_COOKIES_B64
-      ),
-
-      instagram: Boolean(
-        process.env.INSTAGRAM_COOKIES_B64
-      ),
-
-      tiktok: Boolean(
-        process.env.TIKTOK_COOKIES_B64
-      )
-    },
-
+    youtubeCookiesConfigured: Boolean(process.env.YOUTUBE_COOKIES_B64),
     time: new Date().toISOString()
   });
 });
 
-/* =========================
-   DOWNLOAD
-========================= */
-
 app.post('/api/download', async (req, res) => {
+  const url = String(req.body?.url || '').trim();
+  const format = String(req.body?.format || 'mp4').toLowerCase() === 'mp3' ? 'mp3' : 'mp4';
 
-  const {
-    url,
-    format = 'mp4'
-  } = req.body || {};
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ ok: false, error: 'Link video tidak valid.' });
+  }
 
-  if (
-    !url ||
-    !/^https?:\/\//i.test(url)
-  ) {
+  const platform = getPlatform(url);
+  if (!supportedUrl(url)) {
     return res.status(400).json({
       ok: false,
-      error: 'URL tidak valid.'
+      error: 'Link belum didukung. Gunakan YouTube, TikTok, Instagram, Facebook, atau X.'
     });
   }
 
-  const platform = detectPlatform(url);
-
-  if (platform === 'unknown') {
-    return res.status(400).json({
-      ok: false,
-      error:
-        'Platform belum didukung.'
-    });
-  }
-
-  console.log(
-    'DOWNLOAD PLATFORM:',
-    platform
-  );
-
-  console.log(
-    'DOWNLOAD URL:',
-    url
-  );
-
-  const id =
-    crypto.randomBytes(8).toString('hex');
-
-  const template = path.join(
-    OUT,
-    `${id}.%(ext)s`
-  );
-
+  const id = crypto.randomBytes(8).toString('hex');
+  const sourceTemplate = path.join(OUT, `${id}-source.%(ext)s`);
   let cookieInfo = null;
+  let sourceFile = null;
 
   try {
+    console.log('DOWNLOAD PLATFORM:', platform);
+    console.log('DOWNLOAD URL:', url);
 
-    /* =====================
-       COOKIES PER PLATFORM
-    ===================== */
-
-    if (platform === 'youtube') {
-
-      cookieInfo = createCookieFile(
-        'YOUTUBE_COOKIES_B64',
-        'palend-youtube-'
-      );
-
-    } else if (platform === 'instagram') {
-
-      cookieInfo = createCookieFile(
-        'INSTAGRAM_COOKIES_B64',
-        'palend-instagram-'
-      );
-
-    } else if (platform === 'tiktok') {
-
-      cookieInfo = createCookieFile(
-        'TIKTOK_COOKIES_B64',
-        'palend-tiktok-'
-      );
-    }
-
-    /* =====================
-       BASE ARGUMENTS
-    ===================== */
+    cookieInfo = createYoutubeCookiesFile();
 
     const args = [
       '--no-playlist',
       '--restrict-filenames',
-      '--newline',
       '--no-warnings',
-
-      '--socket-timeout',
-      '30',
-
-      '--retries',
-      '3',
-
-      '--fragment-retries',
-      '3',
-
-      '-o',
-      template
+      '--newline',
+      '-o', sourceTemplate
     ];
 
-    /* =====================
-       COOKIES
-    ===================== */
-
-    if (cookieInfo) {
-
-      args.push(
-        '--cookies',
-        cookieInfo.file
-      );
-
+    if (cookieInfo && platform === 'youtube') {
+      args.push('--cookies', cookieInfo.file);
     }
-
-    /* =====================
-       TIKTOK
-    ===================== */
-
-    if (platform === 'tiktok') {
-
-      /*
-       * Browser impersonation.
-       *
-       * Membantu situs yang melakukan
-       * TLS/browser fingerprint checking.
-       */
-
-      args.push(
-        '--impersonate',
-        'chrome'
-      );
-    }
-
-    /* =====================
-       INSTAGRAM
-    ===================== */
-
-    if (platform === 'instagram') {
-
-      args.push(
-        '--impersonate',
-        'chrome'
-      );
-    }
-
-    /* =====================
-       YOUTUBE
-    ===================== */
-
-    if (platform === 'youtube') {
-
-      args.push(
-        '--extractor-args',
-        'youtube:player_client=android,web'
-      );
-    }
-
-    /* =====================
-       FORMAT
-    ===================== */
 
     if (format === 'mp3') {
-
       args.push(
+        '-f', 'ba/b',
         '-x',
-        '--audio-format',
-        'mp3',
-        '--audio-quality',
-        '0'
+        '--audio-format', 'mp3',
+        '--audio-quality', '0'
       );
-
     } else {
-
+      // Prioritaskan H.264 + AAC. Jika tidak tersedia, ambil format terbaik lalu transcode.
       args.push(
         '-f',
+        'bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a]/' +
+        'bv*[vcodec^=avc1][ext=mp4]+ba/' +
+        'b[ext=mp4][vcodec^=avc1]/' +
         'bv*+ba/b',
-        '--merge-output-format',
-        'mp4'
+        '--merge-output-format', 'mp4'
       );
     }
 
     args.push(url);
+    await run(process.env.YTDLP_BIN || 'yt-dlp', args);
 
-    console.log(
-      'YT-DLP ARGS:',
-      args.filter(
-        x => !String(x).includes('cookies.txt')
-      )
-    );
+    sourceFile = findFile(`${id}-source`);
+    if (!sourceFile) throw new Error('File hasil download tidak ditemukan.');
 
-    /* =====================
-       RUN YT-DLP
-    ===================== */
+    const finalFile = path.join(OUT, `${id}.${format}`);
 
-    await run(
-      process.env.YTDLP_BIN || 'yt-dlp',
-      args
-    );
-
-    /* =====================
-       FIND OUTPUT
-    ===================== */
-
-    const files =
-      fs.readdirSync(OUT);
-
-    const filename =
-      files.find(
-        file =>
-          file.startsWith(`${id}.`)
-      );
-
-    if (!filename) {
-
-      throw new Error(
-        'File hasil download tidak ditemukan.'
-      );
-    }
-
-    console.log(
-      'DOWNLOAD SUCCESS:',
-      filename
-    );
-
-    return res.json({
-
-      ok: true,
-
-      platform,
-
-      filename,
-
-      download:
-        '/api/file/' +
-        encodeURIComponent(filename)
-    });
-
-  } catch (error) {
-
-    const detail =
-      String(error.message || '');
-
-    console.error(
-      'DOWNLOAD ERROR:',
-      detail
-    );
-
-    let message =
-      'Gagal memproses video.';
-
-    if (
-      platform === 'youtube' &&
-      (
-        detail.includes(
-          'Sign in to confirm'
-        ) ||
-        detail.includes(
-          'not a bot'
-        ) ||
-        detail.includes(
-          'cookies'
-        )
-      )
-    ) {
-
-      message =
-        'YouTube meminta autentikasi. Periksa cookies YouTube di Railway.';
-
-    } else if (
-      platform === 'tiktok'
-    ) {
-
-      message =
-        'TikTok menolak permintaan atau extractor yt-dlp sedang mengalami perubahan. Coba URL TikTok lain.';
-
-    } else if (
-      platform === 'instagram'
-    ) {
-
-      message =
-        'Instagram menolak permintaan. Jika konten membutuhkan login, tambahkan cookies Instagram.';
-
+    if (format === 'mp3') {
+      await run(process.env.FFMPEG_BIN || 'ffmpeg', [
+        '-y', '-i', sourceFile,
+        '-vn', '-c:a', 'libmp3lame', '-b:a', '192k',
+        finalFile
+      ]);
     } else {
-
-      message =
-        'URL tidak dapat diproses oleh yt-dlp.';
-
+      // Paksa H.264/AVC + AAC + yuv420p + faststart agar kompatibel dengan pemutar HP.
+      await run(process.env.FFMPEG_BIN || 'ffmpeg', [
+        '-y', '-i', sourceFile,
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-profile:v', 'high',
+        '-level', '4.0',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '48000',
+        '-movflags', '+faststart',
+        finalFile
+      ]);
     }
 
-    return res.status(500).json({
+    safeUnlink(sourceFile);
+    sourceFile = null;
 
-      ok: false,
-
+    const filename = path.basename(finalFile);
+    return res.json({
+      ok: true,
       platform,
-
-      error: message,
-
-      detail:
-        detail.slice(0, 1000)
+      format,
+      filename,
+      download: '/api/file/' + encodeURIComponent(filename)
     });
+  } catch (error) {
+    const detail = String(error.message || '');
+    console.error('DOWNLOAD ERROR:', detail);
 
+    let message = 'Gagal memproses video.';
+    if (/Sign in to confirm|not a bot|authentication|cookies/i.test(detail)) {
+      message = 'YouTube meminta autentikasi. Pastikan cookies YouTube di Railway masih valid.';
+    } else if (/Requested format is not available/i.test(detail)) {
+      message = 'Format video yang diminta tidak tersedia. Coba link video lain.';
+    } else if (/ffmpeg|No such file or directory/i.test(detail)) {
+      message = 'FFmpeg tidak tersedia atau gagal mengubah video ke format yang kompatibel.';
+    }
+
+    return res.status(500).json({ ok: false, error: message, detail: detail.slice(0, 1000) });
   } finally {
-
-    removeCookieFile(cookieInfo);
+    safeUnlink(sourceFile);
+    removeYoutubeCookies(cookieInfo);
   }
 });
 
-/* =========================
-   DOWNLOAD FILE
-========================= */
+app.get('/api/file/:name', (req, res) => {
+  const filename = path.basename(req.params.name);
+  const file = path.join(OUT, filename);
 
-app.get(
-  '/api/file/:name',
-  (req, res) => {
+  if (!fs.existsSync(file)) {
+    return res.status(404).send('File tidak ditemukan atau sudah dibersihkan.');
+  }
 
-    const filename =
-      path.basename(
-        req.params.name
-      );
+  res.download(file, filename);
+});
 
-    const file =
-      path.join(
-        OUT,
-        filename
-      );
+app.post('/api/merge', upload.array('videos', 20), async (req, res) => {
+  if (!req.files || req.files.length < 2) {
+    return res.status(400).json({ ok: false, error: 'Pilih minimal 2 video.' });
+  }
 
-    if (
-      !fs.existsSync(file)
-    ) {
+  const id = crypto.randomBytes(8).toString('hex');
+  const listFile = path.join(UP, `${id}.txt`);
+  const outputFile = path.join(OUT, `${id}-palend.mp4`);
+  const normalizedFiles = [];
 
-      return res
-        .status(404)
-        .send(
-          'File tidak ditemukan'
-        );
+  try {
+    // Normalisasi setiap video ke H.264/AAC agar aman saat digabung.
+    for (let i = 0; i < req.files.length; i++) {
+      const input = req.files[i].path;
+      const normalized = path.join(UP, `${id}-part-${i}.mp4`);
+
+      await run(process.env.FFMPEG_BIN || 'ffmpeg', [
+        '-y', '-i', input,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '48000',
+        '-movflags', '+faststart',
+        normalized
+      ]);
+
+      normalizedFiles.push(normalized);
     }
 
-    res.download(
-      file,
-      filename
-    );
+    const listContent = normalizedFiles.map((file) => {
+      const safe = file.replace(/'/g, "'\\''");
+      return `file '${safe}'`;
+    }).join('\n');
+
+    fs.writeFileSync(listFile, listContent);
+
+    await run(process.env.FFMPEG_BIN || 'ffmpeg', [
+      '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+      '-c', 'copy', '-movflags', '+faststart', outputFile
+    ]);
+
+    const filename = path.basename(outputFile);
+    return res.json({
+      ok: true,
+      filename,
+      download: '/api/file/' + encodeURIComponent(filename)
+    });
+  } catch (error) {
+    console.error('MERGE ERROR:', error.message);
+    return res.status(500).json({
+      ok: false,
+      error: 'Penggabungan gagal. Pastikan FFmpeg tersedia dan video dapat diproses.',
+      detail: String(error.message).slice(0, 1000)
+    });
+  } finally {
+    for (const file of req.files || []) safeUnlink(file.path);
+    safeUnlink(listFile);
+    for (const file of normalizedFiles) safeUnlink(file);
   }
-);
+});
 
-/* =========================
-   MERGE VIDEO
-========================= */
+app.get('*', (req, res) => {
+  res.sendFile(path.join(ROOT, 'public', 'index.html'));
+});
 
-app.post(
-  '/api/merge',
-  upload.array(
-    'videos',
-    20
-  ),
-  async (req, res) => {
-
-    if (
-      !req.files ||
-      req.files.length < 2
-    ) {
-
-      return res.status(400).json({
-
-        ok: false,
-
-        error:
-          'Pilih minimal 2 video.'
-      });
-    }
-
-    const id =
-      crypto.randomBytes(8)
-        .toString('hex');
-
-    const listFile =
-      path.join(
-        UP,
-        `${id}.txt`
-      );
-
-    const outputFile =
-      path.join(
-        OUT,
-        `${id}-palend.mp4`
-      );
-
-    try {
-
-      const listContent =
-        req.files
-          .map(file => {
-
-            const safePath =
-              file.path.replace(
-                /'/g,
-                "'\\''"
-              );
-
-            return `file '${safePath}'`;
-          })
-          .join('\n');
-
-      fs.writeFileSync(
-        listFile,
-        listContent
-      );
-
-      await run(
-        process.env.FFMPEG_BIN ||
-        'ffmpeg',
-        [
-          '-y',
-
-          '-f',
-          'concat',
-
-          '-safe',
-          '0',
-
-          '-i',
-          listFile,
-
-          '-c',
-          'copy',
-
-          outputFile
-        ]
-      );
-
-      return res.json({
-
-        ok: true,
-
-        filename:
-          path.basename(
-            outputFile
-          ),
-
-        download:
-          '/api/file/' +
-          encodeURIComponent(
-            path.basename(
-              outputFile
-            )
-          )
-      });
-
-    } catch (error) {
-
-      console.error(
-        'MERGE ERROR:',
-        error.message
-      );
-
-      return res.status(500).json({
-
-        ok: false,
-
-        error:
-          'Penggabungan video gagal.',
-
-        detail:
-          String(
-            error.message
-          ).slice(0, 1000)
-      });
-
-    } finally {
-
-      for (
-        const file of
-        req.files || []
-      ) {
-
-        try {
-          fs.unlinkSync(
-            file.path
-          );
-        } catch {}
-      }
-
-      try {
-        fs.unlinkSync(
-          listFile
-        );
-      } catch {}
-    }
-  }
-);
-
-/* =========================
-   FRONTEND
-========================= */
-
-app.get(
-  '*',
-  (req, res) => {
-
-    res.sendFile(
-      path.join(
-        ROOT,
-        'public',
-        'index.html'
-      )
-    );
-  }
-);
-
-/* =========================
-   START
-========================= */
-
-app.listen(
-  PORT,
-  '0.0.0.0',
-  () => {
-
-    console.log(
-      `Palend Downloader listening on ${PORT}`
-    );
-
-  }
-);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Palend Downloader listening on ${PORT}`);
+});
+      
