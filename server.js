@@ -1,1169 +1,475 @@
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const crypto = require('crypto');
-const { spawn } = require('child_process');
+const express = require("express");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const crypto = require("crypto");
+const { spawn } = require("child_process");
 
 const app = express();
-
-/* =========================================================
-   CONFIG
-========================================================= */
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
 
-const UPLOAD_DIR = path.join(ROOT, 'uploads');
-const OUTPUT_DIR = path.join(ROOT, 'outputs');
+const UPLOAD_DIR = path.join(ROOT, "uploads");
+const OUTPUT_DIR = path.join(ROOT, "outputs");
 
-const YTDLP_BIN =
-  process.env.YTDLP_BIN || 'yt-dlp';
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-const FFMPEG_BIN =
-  process.env.FFMPEG_BIN || 'ffmpeg';
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-fs.mkdirSync(UPLOAD_DIR, {
-  recursive: true
-});
-
-fs.mkdirSync(OUTPUT_DIR, {
-  recursive: true
-});
-
-/* =========================================================
-   EXPRESS
-========================================================= */
-
-app.use(
-  express.json({
-    limit: '2mb'
-  })
-);
-
-app.use(
-  express.urlencoded({
-    extended: true,
-    limit: '2mb'
-  })
-);
-
-app.use(
-  express.static(
-    path.join(ROOT, 'public')
-  )
-);
-
-/* =========================================================
-   MULTER
-========================================================= */
+app.use(express.static(path.join(ROOT, "public")));
 
 const upload = multer({
   dest: UPLOAD_DIR,
-
   limits: {
-    fileSize:
-      500 * 1024 * 1024,
-
+    fileSize: 500 * 1024 * 1024,
     files: 20
   }
 });
 
 /* =========================================================
-   COMMAND RUNNER
+   RUN COMMAND
 ========================================================= */
 
-function run(command, args) {
-  return new Promise(
-    (resolve, reject) => {
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: process.env
+    });
 
-      console.log(
-        '[RUN]',
-        command,
-        args.join(' ')
-      );
+    let stdout = "";
+    let stderr = "";
 
-      const child = spawn(
-        command,
-        args,
-        {
-          env: {
-            ...process.env
-          }
-        }
-      );
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
 
-      let stdout = '';
-      let stderr = '';
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
 
-      child.stdout.on(
-        'data',
-        data => {
-          stdout +=
-            data.toString();
-        }
-      );
+    child.on("error", (error) => {
+      reject(error);
+    });
 
-      child.stderr.on(
-        'data',
-        data => {
-          stderr +=
-            data.toString();
-        }
-      );
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            stderr.trim() ||
+            stdout.trim() ||
+            `Command exited with code ${code}`
+          )
+        );
+        return;
+      }
 
-      child.on(
-        'error',
-        error => {
-          reject(error);
-        }
-      );
-
-      child.on(
-        'close',
-        code => {
-
-          if (code !== 0) {
-
-            reject(
-              new Error(
-                stderr.trim() ||
-                stdout.trim() ||
-                `Command gagal dengan kode ${code}`
-              )
-            );
-
-            return;
-          }
-
-          resolve({
-            stdout,
-            stderr
-          });
-        }
-      );
-    }
-  );
+      resolve({
+        stdout,
+        stderr
+      });
+    });
+  });
 }
 
 /* =========================================================
-   PLATFORM DETECTION
+   COOKIE HELPER
 ========================================================= */
 
-function detectPlatform(url) {
-
-  const value =
-    String(url)
-      .toLowerCase();
-
-  if (
-    value.includes(
-      'youtube.com'
-    ) ||
-    value.includes(
-      'youtu.be'
-    ) ||
-    value.includes(
-      'youtube-nocookie.com'
-    )
-  ) {
-    return 'youtube';
-  }
-
-  if (
-    value.includes(
-      'tiktok.com'
-    ) ||
-    value.includes(
-      'vm.tiktok.com'
-    ) ||
-    value.includes(
-      'vt.tiktok.com'
-    )
-  ) {
-    return 'tiktok';
-  }
-
-  if (
-    value.includes(
-      'instagram.com'
-    ) ||
-    value.includes(
-      'instagr.am'
-    )
-  ) {
-    return 'instagram';
-  }
-
-  if (
-    value.includes(
-      'facebook.com'
-    ) ||
-    value.includes(
-      'fb.watch'
-    ) ||
-    value.includes(
-      'm.facebook.com'
-    )
-  ) {
-    return 'facebook';
-  }
-
-  if (
-    value.includes(
-      'twitter.com'
-    ) ||
-    value.includes(
-      'x.com'
-    )
-  ) {
-    return 'twitter';
-  }
-
-  return 'unknown';
-}
-
-/* =========================================================
-   URL VALIDATION
-========================================================= */
-
-function isValidUrl(url) {
-
-  try {
-
-    const parsed =
-      new URL(url);
-
-    return (
-      parsed.protocol ===
-        'http:' ||
-      parsed.protocol ===
-        'https:'
-    );
-
-  } catch {
-
-    return false;
-  }
-}
-
-/* =========================================================
-   COOKIE FILE CREATOR
-========================================================= */
-
-/*
-   Railway Variable:
-
-   YOUTUBE_COOKIES_B64
-
-   Berisi cookies.txt dalam format
-   Netscape/Mozilla yang sudah di-Base64.
-*/
-
-function createCookieFile(
-  environmentVariable
-) {
-
-  const encoded =
-    process.env[
-      environmentVariable
-    ];
-
-  if (!encoded) {
+function createCookieFile(base64, prefix) {
+  if (!base64) {
     return null;
   }
 
-  const tempDir =
-    fs.mkdtempSync(
-      path.join(
-        os.tmpdir(),
-        'palend-cookie-'
-      )
-    );
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), prefix)
+  );
 
-  const cookieFile =
-    path.join(
-      tempDir,
-      'cookies.txt'
-    );
+  const cookieFile = path.join(
+    tempDir,
+    "cookies.txt"
+  );
 
   try {
+    const decoded = Buffer
+      .from(base64.trim(), "base64")
+      .toString("utf8");
 
-    const cookieData =
-      Buffer.from(
-        encoded.trim(),
-        'base64'
-      ).toString(
-        'utf8'
-      );
+    const validHeader =
+      decoded.includes("# Netscape HTTP Cookie File") ||
+      decoded.includes("# HTTP Cookie File");
 
-    if (
-      !cookieData.trim()
-    ) {
+    if (!validHeader) {
       throw new Error(
-        `${environmentVariable} kosong`
-      );
-    }
-
-    const lines =
-      cookieData.split(
-        /\r?\n/
-      );
-
-    /*
-       Pertahankan header komentar,
-       dan hanya cookie yang memiliki
-       minimal 7 field tab-separated.
-    */
-
-    const cleaned =
-      lines.filter(line => {
-
-        if (
-          !line.trim()
-        ) {
-          return true;
-        }
-
-        if (
-          line.startsWith('#')
-        ) {
-          return true;
-        }
-
-        const parts =
-          line.split('\t');
-
-        return (
-          parts.length >= 7
-        );
-      });
-
-    const output =
-      cleaned.join('\n');
-
-    /*
-       Validasi sederhana.
-    */
-
-    const hasHeader =
-      output.includes(
-        '# Netscape HTTP Cookie File'
-      ) ||
-      output.includes(
-        '# HTTP Cookie File'
-      );
-
-    const cookieRows =
-      cleaned.filter(
-        line => {
-
-          if (
-            !line.trim()
-          ) {
-            return false;
-          }
-
-          if (
-            line.startsWith('#')
-          ) {
-            return false;
-          }
-
-          return (
-            line.split('\t')
-              .length >= 7
-          );
-        }
-      );
-
-    if (
-      !hasHeader &&
-      cookieRows.length === 0
-    ) {
-
-      throw new Error(
-        `${environmentVariable} bukan cookies.txt Netscape yang valid`
+        "Cookie bukan format Netscape/Mozilla."
       );
     }
 
     fs.writeFileSync(
       cookieFile,
-      output,
+      decoded,
       {
-        encoding: 'utf8',
+        encoding: "utf8",
         mode: 0o600
       }
-    );
-
-    console.log(
-      `[COOKIE] ${environmentVariable} loaded`
     );
 
     return {
       file: cookieFile,
       dir: tempDir
     };
-
   } catch (error) {
-
-    try {
-
-      fs.rmSync(
-        tempDir,
-        {
-          recursive: true,
-          force: true
-        }
-      );
-
-    } catch {}
-
-    throw error;
-  }
-}
-
-/* =========================================================
-   REMOVE COOKIE FILE
-========================================================= */
-
-function removeCookieFile(
-  cookieInfo
-) {
-
-  if (!cookieInfo) {
-    return;
-  }
-
-  try {
-
     fs.rmSync(
-      cookieInfo.dir,
+      tempDir,
       {
         recursive: true,
         force: true
       }
     );
 
-  } catch {}
+    throw error;
+  }
+}
+
+function removeCookieFile(info) {
+  if (!info) {
+    return;
+  }
+
+  try {
+    fs.rmSync(
+      info.dir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+  } catch (error) {
+    console.error(
+      "COOKIE CLEANUP ERROR:",
+      error.message
+    );
+  }
 }
 
 /* =========================================================
-   BUILD YT-DLP ARGUMENTS
+   DETECT PLATFORM
 ========================================================= */
 
-function buildYtDlpArgs({
-  platform,
-  url,
-  outputTemplate,
-  format,
-  cookieInfo
-}) {
-
-  const args = [
-
-    '--no-playlist',
-
-    '--restrict-filenames',
-
-    '--no-warnings',
-
-    '--newline',
-
-    '--no-part',
-
-    '--ignore-config',
-
-    '-o',
-
-    outputTemplate
-  ];
-
-  /* =======================================================
-     YOUTUBE
-  ======================================================= */
+function detectPlatform(url) {
+  const value = url.toLowerCase();
 
   if (
-    platform === 'youtube'
+    value.includes("youtube.com") ||
+    value.includes("youtu.be")
   ) {
-
-    /*
-       Gunakan cookies YouTube jika tersedia.
-    */
-
-    if (cookieInfo) {
-
-      args.push(
-        '--cookies',
-        cookieInfo.file
-      );
-    }
-
-    /*
-       Coba client default + web_embedded.
-
-       web_embedded adalah salah satu client
-       yang tersedia pada extractor YouTube.
-    */
-
-    args.push(
-      '--extractor-args',
-      'youtube:player_client=default,web_embedded'
-    );
-
-    /*
-       Hindari playlist.
-    */
-
-    args.push(
-      '--no-playlist'
-    );
+    return "youtube";
   }
-
-  /* =======================================================
-     FORMAT MP3
-  ======================================================= */
 
   if (
-    String(format)
-      .toLowerCase() ===
-    'mp3'
+    value.includes("tiktok.com") ||
+    value.includes("vm.tiktok.com") ||
+    value.includes("vt.tiktok.com")
   ) {
-
-    args.push(
-      '-x',
-      '--audio-format',
-      'mp3',
-      '--audio-quality',
-      '0'
-    );
-
+    return "tiktok";
   }
 
-  /* =======================================================
-     FORMAT MP4
-  ======================================================= */
-
-  else {
-
-    args.push(
-      '-f',
-      'bv*+ba/b',
-
-      '--merge-output-format',
-      'mp4'
-    );
+  if (
+    value.includes("instagram.com")
+  ) {
+    return "instagram";
   }
 
-  args.push(url);
-
-  return args;
-}
-
-/* =========================================================
-   FIND OUTPUT FILE
-========================================================= */
-
-function findOutputFile(
-  id
-) {
-
-  const files =
-    fs.readdirSync(
-      OUTPUT_DIR
-    );
-
-  return files.find(
-    file =>
-      file.startsWith(
-        `${id}.`
-      )
-  );
+  return "other";
 }
 
 /* =========================================================
    HEALTH
 ========================================================= */
 
-app.get(
-  '/api/health',
-  (req, res) => {
-
-    res.json({
-
-      ok: true,
-
-      status: 'online',
-
-      service:
-        'Palend Downloader',
-
-      youtubeCookiesConfigured:
-        Boolean(
-          process.env
-            .YOUTUBE_COOKIES_B64
-        ),
-
-      supportedPlatforms: [
-        'YouTube',
-        'TikTok',
-        'Instagram',
-        'Facebook',
-        'X/Twitter'
-      ],
-
-      time:
-        new Date()
-          .toISOString()
-    });
-  }
-);
-
-/* =========================================================
-   PLATFORM
-========================================================= */
-
-app.get(
-  '/api/platform',
-  (req, res) => {
-
-    const url =
-      req.query.url;
-
-    if (
-      !url
-    ) {
-
-      return res.status(400)
-        .json({
-          ok: false,
-          error:
-            'URL wajib diisi.'
-        });
-    }
-
-    res.json({
-
-      ok: true,
-
-      platform:
-        detectPlatform(url)
-    });
-  }
-);
-
-/* =========================================================
-   VIDEO INFO
-========================================================= */
-
-app.get(
-  '/api/info',
-  async (req, res) => {
-
-    const url =
-      req.query.url;
-
-    if (
-      !url ||
-      !isValidUrl(url)
-    ) {
-
-      return res.status(400)
-        .json({
-
-          ok: false,
-
-          error:
-            'URL tidak valid.'
-        });
-    }
-
-    const platform =
-      detectPlatform(url);
-
-    if (
-      platform ===
-      'unknown'
-    ) {
-
-      return res.status(400)
-        .json({
-
-          ok: false,
-
-          error:
-            'Platform belum didukung.'
-        });
-    }
-
-    let cookieInfo =
-      null;
-
-    try {
-
-      /*
-         Hanya YouTube yang menggunakan
-         YOUTUBE_COOKIES_B64.
-      */
-
-      if (
-        platform ===
-        'youtube'
-      ) {
-
-        cookieInfo =
-          createCookieFile(
-            'YOUTUBE_COOKIES_B64'
-          );
-      }
-
-      const args = [
-
-        '--no-playlist',
-
-        '--no-warnings',
-
-        '--skip-download',
-
-        '--dump-single-json',
-
-        '--no-simulate',
-
-        '--ignore-config'
-      ];
-
-      if (
-        platform ===
-        'youtube'
-      ) {
-
-        if (
-          cookieInfo
-        ) {
-
-          args.push(
-            '--cookies',
-            cookieInfo.file
-          );
-        }
-
-        args.push(
-          '--extractor-args',
-          'youtube:player_client=default,web_embedded'
-        );
-      }
-
-      args.push(url);
-
-      const result =
-        await run(
-          YTDLP_BIN,
-          args
-        );
-
-      let info;
-
-      try {
-
-        info =
-          JSON.parse(
-            result.stdout
-          );
-
-      } catch {
-
-        throw new Error(
-          'yt-dlp menghasilkan data JSON yang tidak valid.'
-        );
-      }
-
-      return res.json({
-
-        ok: true,
-
-        platform,
-
-        id:
-          info.id || null,
-
-        title:
-          info.title ||
-          'Video',
-
-        thumbnail:
-          info.thumbnail ||
-          null,
-
-        duration:
-          info.duration ||
-          null,
-
-        uploader:
-          info.uploader ||
-          info.channel ||
-          info.creator ||
-          null
-      });
-
-    } catch (error) {
-
-      console.error(
-        '[INFO ERROR]',
-        error.message
-      );
-
-      return res.status(500)
-        .json({
-
-          ok: false,
-
-          platform,
-
-          error:
-            'Gagal mengambil informasi video.',
-
-          detail:
-            String(
-              error.message
-            ).slice(0, 1000)
-        });
-
-    } finally {
-
-      removeCookieFile(
-        cookieInfo
-      );
-    }
-  }
-);
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    status: "online",
+    service: "Palend Downloader",
+    youtubeCookies: Boolean(
+      process.env.YOUTUBE_COOKIES_B64
+    ),
+    instagramCookies: Boolean(
+      process.env.INSTAGRAM_COOKIES_B64
+    ),
+    tiktokCookies: Boolean(
+      process.env.TIKTOK_COOKIES_B64
+    ),
+    ytDlp: process.env.YTDLP_BIN || "yt-dlp",
+    ffmpeg: process.env.FFMPEG_BIN || "ffmpeg",
+    time: new Date().toISOString()
+  });
+});
 
 /* =========================================================
    DOWNLOAD
 ========================================================= */
 
 app.post(
-  '/api/download',
+  "/api/download",
   async (req, res) => {
 
-    const {
-      url,
-      format = 'mp4'
-    } =
-      req.body || {};
+    const url =
+      typeof req.body?.url === "string"
+        ? req.body.url.trim()
+        : "";
 
-    /* -------------------------------------------------------
-       VALIDASI
-    ------------------------------------------------------- */
+    const format =
+      req.body?.format === "mp3"
+        ? "mp3"
+        : "mp4";
 
-    if (
-      !url
-    ) {
-
-      return res.status(400)
-        .json({
-
-          ok: false,
-
-          error:
-            'URL wajib diisi.'
-        });
+    if (!url) {
+      return res.status(400).json({
+        ok: false,
+        error: "URL video belum diisi."
+      });
     }
 
-    if (
-      !isValidUrl(url)
-    ) {
-
-      return res.status(400)
-        .json({
-
-          ok: false,
-
-          error:
-            'URL tidak valid.'
-        });
+    if (!/^https?:\/\//i.test(url)) {
+      return res.status(400).json({
+        ok: false,
+        error: "URL harus dimulai dengan http:// atau https://."
+      });
     }
 
-    const platform =
-      detectPlatform(url);
-
-    if (
-      platform ===
-      'unknown'
-    ) {
-
-      return res.status(400)
-        .json({
-
-          ok: false,
-
-          error:
-            'Platform belum didukung.'
-        });
-    }
-
-    /* -------------------------------------------------------
-       ID FILE
-    ------------------------------------------------------- */
+    const platform = detectPlatform(url);
 
     const id =
-      crypto
-        .randomBytes(10)
-        .toString('hex');
+      crypto.randomBytes(8).toString("hex");
 
-    const template =
-      path.join(
-        OUTPUT_DIR,
-        `${id}.%(ext)s`
-      );
+    const outputTemplate = path.join(
+      OUTPUT_DIR,
+      `${id}.%(ext)s`
+    );
 
-    let cookieInfo =
-      null;
+    let cookieInfo = null;
 
     try {
 
-      /* -----------------------------------------------------
-         COOKIES YOUTUBE
-      ----------------------------------------------------- */
+      /* ---------------------------------------------------
+         PILIH COOKIE SESUAI PLATFORM
+      --------------------------------------------------- */
 
-      if (
-        platform ===
-        'youtube'
-      ) {
+      if (platform === "youtube") {
 
-        cookieInfo =
-          createCookieFile(
-            'YOUTUBE_COOKIES_B64'
-          );
-      }
+        cookieInfo = createCookieFile(
+          process.env.YOUTUBE_COOKIES_B64,
+          "palend-youtube-"
+        );
 
-      /* -----------------------------------------------------
-         BUILD ARGUMENT
-      ----------------------------------------------------- */
+      } else if (platform === "instagram") {
 
-      const args =
-        buildYtDlpArgs({
+        cookieInfo = createCookieFile(
+          process.env.INSTAGRAM_COOKIES_B64,
+          "palend-instagram-"
+        );
 
-          platform,
+      } else if (platform === "tiktok") {
 
-          url,
-
-          outputTemplate:
-            template,
-
-          format,
-
-          cookieInfo
-        });
-
-      console.log(
-        `[DOWNLOAD] Platform: ${platform}`
-      );
-
-      console.log(
-        `[DOWNLOAD] URL: ${url}`
-      );
-
-      /* -----------------------------------------------------
-         RUN YT-DLP
-      ----------------------------------------------------- */
-
-      await run(
-        YTDLP_BIN,
-        args
-      );
-
-      /* -----------------------------------------------------
-         CARI FILE
-      ----------------------------------------------------- */
-
-      const filename =
-        findOutputFile(id);
-
-      if (
-        !filename
-      ) {
-
-        throw new Error(
-          'File hasil download tidak ditemukan.'
+        cookieInfo = createCookieFile(
+          process.env.TIKTOK_COOKIES_B64,
+          "palend-tiktok-"
         );
       }
 
+      /* ---------------------------------------------------
+         BASE ARGUMENTS
+      --------------------------------------------------- */
+
+      const args = [
+        "--no-playlist",
+        "--restrict-filenames",
+        "--newline",
+        "--no-warnings",
+        "--ignore-errors",
+        "-o",
+        outputTemplate
+      ];
+
+      /* ---------------------------------------------------
+         COOKIE
+      --------------------------------------------------- */
+
+      if (cookieInfo) {
+        args.push(
+          "--cookies",
+          cookieInfo.file
+        );
+      }
+
+      /* ---------------------------------------------------
+         USER AGENT
+      --------------------------------------------------- */
+
+      if (process.env.YTDLP_USER_AGENT) {
+        args.push(
+          "--user-agent",
+          process.env.YTDLP_USER_AGENT
+        );
+      }
+
+      /* ---------------------------------------------------
+         FORMAT
+      --------------------------------------------------- */
+
+      if (format === "mp3") {
+
+        args.push(
+          "-x",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          "0"
+        );
+
+      } else {
+
+        args.push(
+          "-f",
+          "bv*+ba/b",
+          "--merge-output-format",
+          "mp4"
+        );
+      }
+
+      /* ---------------------------------------------------
+         URL HARUS TERAKHIR
+      --------------------------------------------------- */
+
+      args.push(url);
+
       console.log(
-        `[SUCCESS] ${filename}`
+        "DOWNLOAD PLATFORM:",
+        platform
       );
 
+      console.log(
+        "DOWNLOAD URL:",
+        url
+      );
+
+      /* ---------------------------------------------------
+         RUN YT-DLP
+      --------------------------------------------------- */
+
+      await runCommand(
+        process.env.YTDLP_BIN || "yt-dlp",
+        args
+      );
+
+      /* ---------------------------------------------------
+         CARI FILE HASIL
+      --------------------------------------------------- */
+
+      const files =
+        fs.readdirSync(OUTPUT_DIR);
+
+      const filename =
+        files.find((file) =>
+          file.startsWith(`${id}.`)
+        );
+
+      if (!filename) {
+        throw new Error(
+          "File hasil download tidak ditemukan."
+        );
+      }
+
       return res.json({
-
         ok: true,
-
         platform,
-
+        format,
         filename,
-
         download:
-          '/api/file/' +
-          encodeURIComponent(
-            filename
-          )
+          "/api/file/" +
+          encodeURIComponent(filename)
       });
 
     } catch (error) {
 
       const detail =
-        String(
-          error.message || ''
-        );
+        String(error.message || "");
 
       console.error(
-        '[DOWNLOAD ERROR]',
+        "DOWNLOAD ERROR:",
         detail
       );
 
       let message =
-        'Gagal memproses video.';
-
-      /* -----------------------------------------------------
-         YOUTUBE AUTH
-      ----------------------------------------------------- */
+        "Gagal memproses video.";
 
       if (
-        detail.includes(
-          'Sign in to confirm'
-        ) ||
-        detail.includes(
-          'not a bot'
-        )
+        detail.includes("Sign in to confirm") ||
+        detail.includes("not a bot") ||
+        detail.includes("authentication")
       ) {
 
         message =
-          'YouTube meminta autentikasi. Cookies atau metode autentikasi YouTube perlu diperbarui.';
-      }
+          "Platform meminta autentikasi. Pastikan cookies masih valid.";
 
-      /* -----------------------------------------------------
-         PAGE RELOAD
-      ----------------------------------------------------- */
-
-      else if (
-        detail.includes(
-          'The page needs to be reloaded'
-        )
+      } else if (
+        detail.includes("Unsupported URL")
       ) {
 
         message =
-          'YouTube meminta halaman dimuat ulang. Cookies/client YouTube mungkin sudah tidak valid atau YouTube membutuhkan mekanisme autentikasi tambahan.';
-      }
+          "URL tidak didukung oleh yt-dlp.";
 
-      /* -----------------------------------------------------
-         COOKIE ERROR
-      ----------------------------------------------------- */
-
-      else if (
-        detail.includes(
-          'cookie'
-        ) ||
-        detail.includes(
-          'cookies'
-        )
+      } else if (
+        detail.includes("page needs to be reloaded")
       ) {
 
         message =
-          'Cookies tidak dapat digunakan. Pastikan cookies.txt berformat Netscape dan masih aktif.';
-      }
+          "Halaman platform meminta dimuat ulang. Coba lagi atau perbarui yt-dlp.";
 
-      /* -----------------------------------------------------
-         UNSUPPORTED URL
-      ----------------------------------------------------- */
-
-      else if (
-        detail.includes(
-          'Unsupported URL'
-        )
+      } else if (
+        detail.includes("ffmpeg")
       ) {
 
         message =
-          'URL tersebut tidak dapat diproses oleh yt-dlp.';
-      }
+          "FFmpeg tidak tersedia atau gagal menjalankan proses.";
 
-      /* -----------------------------------------------------
-         INSTAGRAM
-      ----------------------------------------------------- */
-
-      else if (
-        platform ===
-        'instagram'
+      } else if (
+        detail.includes("Cookie")
       ) {
 
         message =
-          'Instagram menolak permintaan atau konten tidak dapat diakses. Pastikan Reel/postingan bersifat publik dan URL benar.';
+          "Cookie tidak valid atau format cookie salah.";
       }
 
-      /* -----------------------------------------------------
-         TIKTOK
-      ----------------------------------------------------- */
-
-      else if (
-        platform ===
-        'tiktok'
-      ) {
-
-        message =
-          'TikTok menolak permintaan atau URL tidak dapat diproses. Pastikan video dapat diakses secara publik.';
-      }
-
-      /* -----------------------------------------------------
-         FFMPEG
-      ----------------------------------------------------- */
-
-      else if (
-        detail
-          .toLowerCase()
-          .includes(
-            'ffmpeg'
-          )
-      ) {
-
-        message =
-          'FFmpeg tidak tersedia atau gagal menggabungkan audio dan video.';
-      }
-
-      return res.status(500)
-        .json({
-
-          ok: false,
-
-          platform,
-
-          error: message,
-
-          detail:
-            detail.slice(
-              0,
-              1200
-            )
-        });
+      return res.status(500).json({
+        ok: false,
+        platform,
+        error: message,
+        detail: detail.slice(0, 1200)
+      });
 
     } finally {
 
-      removeCookieFile(
-        cookieInfo
-      );
+      removeCookieFile(cookieInfo);
     }
   }
 );
 
 /* =========================================================
-   DOWNLOAD RESULT FILE
+   DOWNLOAD FILE
 ========================================================= */
 
 app.get(
-  '/api/file/:name',
+  "/api/file/:name",
   (req, res) => {
 
     const filename =
-      path.basename(
-        req.params.name
-      );
+      path.basename(req.params.name);
 
     const file =
       path.join(
@@ -1171,41 +477,20 @@ app.get(
         filename
       );
 
-    /*
-       Pastikan file berada di OUTPUT_DIR.
-    */
-
-    if (
-      !file.startsWith(
-        OUTPUT_DIR
-      )
-    ) {
-
-      return res.status(403)
-        .send(
-          'Akses ditolak.'
-        );
-    }
-
-    if (
-      !fs.existsSync(file)
-    ) {
-
-      return res.status(404)
-        .send(
-          'File tidak ditemukan atau sudah kedaluwarsa.'
-        );
+    if (!fs.existsSync(file)) {
+      return res.status(404).send(
+        "File tidak ditemukan atau sudah dihapus."
+      );
     }
 
     res.download(
       file,
       filename,
-      error => {
+      (error) => {
 
         if (error) {
-
           console.error(
-            '[FILE ERROR]',
+            "FILE DOWNLOAD ERROR:",
             error.message
           );
         }
@@ -1214,4 +499,171 @@ app.get(
   }
 );
 
-/* ===============
+/* =========================================================
+   MERGE VIDEO
+========================================================= */
+
+app.post(
+  "/api/merge",
+  upload.array("videos", 20),
+  async (req, res) => {
+
+    if (
+      !req.files ||
+      req.files.length < 2
+    ) {
+
+      return res.status(400).json({
+        ok: false,
+        error: "Pilih minimal 2 video."
+      });
+    }
+
+    const id =
+      crypto.randomBytes(8).toString("hex");
+
+    const listFile =
+      path.join(
+        UPLOAD_DIR,
+        `${id}.txt`
+      );
+
+    const outputFile =
+      path.join(
+        OUTPUT_DIR,
+        `${id}-palend.mp4`
+      );
+
+    try {
+
+      const listContent =
+        req.files
+          .map((file) => {
+
+            const safePath =
+              file.path.replace(
+                /'/g,
+                "'\\''"
+              );
+
+            return `file '${safePath}'`;
+
+          })
+          .join("\n");
+
+      fs.writeFileSync(
+        listFile,
+        listContent,
+        "utf8"
+      );
+
+      await runCommand(
+        process.env.FFMPEG_BIN || "ffmpeg",
+        [
+          "-y",
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          listFile,
+          "-c",
+          "copy",
+          outputFile
+        ]
+      );
+
+      return res.json({
+        ok: true,
+        filename:
+          path.basename(outputFile),
+        download:
+          "/api/file/" +
+          encodeURIComponent(
+            path.basename(outputFile)
+          )
+      });
+
+    } catch (error) {
+
+      console.error(
+        "MERGE ERROR:",
+        error.message
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Penggabungan video gagal.",
+        detail:
+          String(
+            error.message || ""
+          ).slice(0, 1000)
+      });
+
+    } finally {
+
+      for (
+        const file of req.files || []
+      ) {
+
+        try {
+          fs.unlinkSync(file.path);
+        } catch {}
+      }
+
+      try {
+        fs.unlinkSync(listFile);
+      } catch {}
+    }
+  }
+);
+
+/* =========================================================
+   404 API
+========================================================= */
+
+app.use(
+  "/api",
+  (req, res) => {
+
+    res.status(404).json({
+      ok: false,
+      error: "API tidak ditemukan."
+    });
+  }
+);
+
+/* =========================================================
+   FRONTEND
+========================================================= */
+
+app.get(
+  "*",
+  (req, res) => {
+
+    res.sendFile(
+      path.join(
+        ROOT,
+        "public",
+        "index.html"
+      )
+    );
+  }
+);
+
+/* =========================================================
+   START SERVER
+========================================================= */
+
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+
+    console.log(
+      `Palend Downloader aktif di port ${PORT}`
+    );
+
+  }
+);
